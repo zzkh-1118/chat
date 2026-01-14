@@ -8,7 +8,7 @@ import base64
 # [사용자 설정]
 # ==========================================
 ACCESS_PASSWORD = "1111"
-HISTORY_FILE = "system_log.dat"
+HISTORY_FILE = "system_log_v2.dat" # 프로젝트 구조를 위해 파일명 변경
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="Gemini Intelligence Center", page_icon="🤖", layout="wide")
@@ -58,23 +58,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 5. 히스토리 관리 ---
-if "messages" not in st.session_state: st.session_state["messages"] = []
+# --- 5. 히스토리 및 프로젝트 관리 ---
+if "projects" not in st.session_state: st.session_state["projects"] = {"Default Project": []}
+if "current_project" not in st.session_state: st.session_state["current_project"] = "Default Project"
 if "auth" not in st.session_state: st.session_state["auth"] = False
 
-def save_history():
+def save_all_data():
+    data = {
+        "projects": st.session_state["projects"],
+        "current_project": st.session_state["current_project"]
+    }
     with open(HISTORY_FILE, "w") as f:
-        f.write(encrypt_data(json.dumps(st.session_state["messages"]), ACCESS_PASSWORD))
+        f.write(encrypt_data(json.dumps(data), ACCESS_PASSWORD))
 
-def load_history():
+def load_all_data():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
-                data = decrypt_data(f.read(), ACCESS_PASSWORD)
-                if data: st.session_state["messages"] = json.loads(data)
+                dec = decrypt_data(f.read(), ACCESS_PASSWORD)
+                if dec:
+                    loaded = json.loads(dec)
+                    st.session_state["projects"] = loaded.get("projects", {"Default Project": []})
+                    st.session_state["current_project"] = loaded.get("current_project", "Default Project")
         except: pass
 
-# --- 6. 사이드바 (모든 세부 기능 복원) ---
+# --- 6. 사이드바 (프로젝트 기능 포함) ---
 with st.sidebar:
     st.title("⚙️ System Control")
     if not st.session_state["auth"]:
@@ -82,13 +90,28 @@ with st.sidebar:
         if st.button("Login", key="login_btn"):
             if pwd == ACCESS_PASSWORD:
                 st.session_state["auth"] = True
-                load_history(); st.rerun()
+                load_all_data(); st.rerun()
             else: st.error("Wrong Code")
         st.stop()
 
+    # [추가] 프로젝트 관리 영역
+    st.subheader("📁 Projects")
+    new_proj_name = st.text_input("New Project Name", placeholder="Enter name...", key="new_proj_input")
+    if st.button("➕ Create Project", use_container_width=True):
+        if new_proj_name and new_proj_name not in st.session_state["projects"]:
+            st.session_state["projects"][new_proj_name] = []
+            st.session_state["current_project"] = new_proj_name
+            save_all_data(); st.rerun()
+
+    proj_list = list(st.session_state["projects"].keys())
+    selected_proj = st.selectbox("Select Project", proj_list, index=proj_list.index(st.session_state["current_project"]))
+    if selected_proj != st.session_state["current_project"]:
+        st.session_state["current_project"] = selected_proj
+        st.rerun()
+
     api_token = st.text_input("🔑 Gemini API Key", type="password", key="api_key_input")
     
-    # [복원 1] 기본 파라미터 설정
+    # 파라미터 설정 (기존 기능 유지)
     st.divider()
     sys_prompt = st.text_area("📜 System Instruction", value="You are a helpful AI assistant.", height=80)
     
@@ -100,21 +123,12 @@ with st.sidebar:
         max_tokens = st.number_input("📏 Max Tokens", 100, 8192, 4096)
         top_k = st.number_input("🎲 Top-K", 1, 100, 40)
 
-    # [복원 2] 안전 설정 (Safety Settings)
     with st.expander("🛡️ Safety Settings"):
-        safety_level = st.select_slider(
-            "Filter Level",
-            options=["BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"],
-            value="BLOCK_ONLY_HIGH"
-        )
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": safety_level},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": safety_level},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": safety_level},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": safety_level},
-        ]
+        safety_level = st.select_slider("Filter Level", 
+            options=["BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"], value="BLOCK_ONLY_HIGH")
+        safety_settings = [{"category": c, "threshold": safety_level} for c in 
+                           ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
 
-    # 모델 설정
     st.divider()
     if st.button("🔄 Refresh Models", key="refresh_models_btn"): st.cache_data.clear(); st.success("Updated")
     
@@ -124,15 +138,19 @@ with st.sidebar:
     
     use_search = st.toggle("🌐 Google Search (Grounding)", value=True, key="search_toggle")
     
-    if st.button("🗑️ Clear History", key="clear_history_btn"):
-        st.session_state["messages"] = []; 
-        if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE)
-        st.rerun()
+    if st.button("🗑️ Delete Current Project", key="del_proj_btn"):
+        if len(st.session_state["projects"]) > 1:
+            del st.session_state["projects"][st.session_state["current_project"]]
+            st.session_state["current_project"] = list(st.session_state["projects"].keys())[0]
+            save_all_data(); st.rerun()
+        else: st.warning("At least one project must exist.")
 
 # --- 7. 메인 채팅 UI ---
-st.title("📊 AI Intelligence Center")
+st.title(f"📊 {st.session_state['current_project']}")
 
-for i, m in enumerate(st.session_state["messages"]):
+current_msgs = st.session_state["projects"][st.session_state["current_project"]]
+
+for i, m in enumerate(current_msgs):
     with st.chat_message(m["role"]):
         if m["role"] == "assistant":
             b64 = base64.b64encode(m["content"].encode('utf-8')).decode('utf-8')
@@ -145,30 +163,23 @@ for i, m in enumerate(st.session_state["messages"]):
         else: st.markdown(m["content"])
 
 if prompt := st.chat_input("Ask anything..."):
-    st.session_state["messages"].append({"role": "user", "content": prompt})
+    current_msgs.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
     with st.chat_message("assistant"):
         ph = st.empty(); ph.markdown("📡 Processing...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_token}"
         
-        # 시스템 프롬프트 구성
         history_payload = [{"role": "user", "parts": [{"text": f"System Instruction: {sys_prompt}"}]},
-                           {"role": "model", "parts": [{"text": "Understood. I will act according to these instructions."}]}]
+                           {"role": "model", "parts": [{"text": "Understood."}]}]
         
-        for msg in st.session_state["messages"][-10:]:
+        for msg in current_msgs[-10:]:
             history_payload.append({"role": "user" if msg["role"]=="user" else "model", "parts": [{"text": msg["content"]}]})
 
         payload = {
-            "contents": history_payload,
-            "tools": [{"google_search": {}}] if use_search else [],
+            "contents": history_payload, "tools": [{"google_search": {}}] if use_search else [],
             "safetySettings": safety_settings,
-            "generationConfig": {
-                "temperature": entropy, 
-                "topP": top_p,
-                "topK": top_k,
-                "maxOutputTokens": max_tokens
-            }
+            "generationConfig": {"temperature": entropy, "topP": top_p, "topK": top_k, "maxOutputTokens": max_tokens}
         }
 
         try:
@@ -183,8 +194,8 @@ if prompt := st.chat_input("Ask anything..."):
                         if 'web' in chunk: sources.append({'title': chunk['web'].get('title'), 'uri': chunk['web'].get('uri')})
                 except: pass
                 ph.markdown(bot_text)
-                st.session_state["messages"].append({"role": "assistant", "content": bot_text, "sources": sources})
-                save_history()
+                current_msgs.append({"role": "assistant", "content": bot_text, "sources": sources})
+                save_all_data()
                 if sources: st.rerun()
             else: ph.error(f"Error {res.status_code}: {res.text}")
         except Exception as e: ph.error(str(e))
