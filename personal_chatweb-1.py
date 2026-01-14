@@ -167,36 +167,24 @@ if "sessions" not in st.session_state: st.session_state.sessions = load_history(
 if "api_key" not in st.session_state: st.session_state.api_key = ""
 
 # --- 5. 모델 리스트 ---
+# --- 5. 모델 설정 (2026년 최신 공식 ID 반영) ---
 MODEL_OPTIONS = {
-    "Nano Banana (Image Spec)": {
-        "gemini-3-pro-image-preview": "Nano Banana Pro (ID: gemini-3-pro-image-preview)",
-        "gemini-2.5-flash-image-preview": "Nano Banana (ID: gemini-2.5-flash-image-preview)",
-        "gemini-2.5-flash-image": "Nano Banana (ID: gemini-2.5-flash-image)",
+    "Gemini 3 Series (Latest)": {
+        "gemini-3-pro-preview": "Gemini 3 Pro (New)",
+        "gemini-3-flash-preview": "Gemini 3 Flash (New)",
+        "gemini-3-pro-image-preview": "Gemini 3 Pro Image",
     },
-    "Gemini 3.0 Series": {
-        "gemini-3-pro-preview": "Gemini 3 Pro Preview",
-        "gemini-3-flash-preview": "Gemini 3 Flash Preview",
-    },
-    "Gemini 2.5 Series": {
-        "gemini-2.5-pro": "Gemini 2.5 Pro",
+    "Gemini 2.5 Series (Stable)": {
+        "gemini-2.5-pro": "Gemini 2.5 Pro (Thinking)",
         "gemini-2.5-flash": "Gemini 2.5 Flash",
         "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
-        "gemini-2.5-computer-use-preview-10-2025": "Gemini 2.5 Computer Use Preview",
     },
-    "Gemini 2.0 Series": {
-        "gemini-2.0-pro-exp-02-05": "Gemini 2.0 Pro Experimental 02-05",
-        "gemini-2.0-pro-exp": "Gemini 2.0 Pro Experimental",
+    "Gemini 2.0 (Legacy/Fast)": {
         "gemini-2.0-flash": "Gemini 2.0 Flash",
         "gemini-2.0-flash-lite": "Gemini 2.0 Flash-Lite",
-        "gemini-2.0-flash-exp": "Gemini 2.0 Flash Experimental",
-    },
-    "Specialized & Latest": {
-        "gemini-robotics-er-1.5-preview": "Gemini Robotics-ER 1.5 Preview",
-        "gemini-exp-1206": "Gemini Experimental 1206",
-        "gemini-pro-latest": "Gemini Pro Latest",
-        "gemini-flash-latest": "Gemini Flash Latest",
     }
 }
+
 
 # --- 6. UI ---
 with st.sidebar:
