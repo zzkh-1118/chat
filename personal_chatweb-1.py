@@ -168,19 +168,17 @@ if "api_key" not in st.session_state: st.session_state.api_key = ""
 
 # --- 5. 모델 리스트 ---
 MODEL_OPTIONS = {
-    "Gemini 3 Series (Latest)": {
-        "gemini-3-pro-preview": "Gemini 3 Pro (New)",
-        "gemini-3-flash-preview": "Gemini 3 Flash (New)",
-        "gemini-3-pro-image-preview": "Gemini 3 Pro Image",
+    "Gemini 3 Series": {
+        "gemini-3.0-pro-latest": "Gemini 3 Pro",
+        "gemini-3.0-flash-latest": "Gemini 3 Flash",
     },
-    "Gemini 2.5 Series (Stable)": {
-        "gemini-2.5-pro": "Gemini 2.5 Pro (Thinking)",
-        "gemini-2.5-flash": "Gemini 2.5 Flash",
-        "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
+    "Gemini 2.5 Series": {
+        "gemini-2.5-pro-latest": "Gemini 2.5 Pro",
+        "gemini-2.5-flash-latest": "Gemini 2.5 Flash",
     },
-    "Gemini 2.0 (Legacy/Fast)": {
-        "gemini-2.0-flash": "Gemini 2.0 Flash",
-        "gemini-2.0-flash-lite": "Gemini 2.0 Flash-Lite",
+    "Gemini 2.0 Series": {
+        "gemini-2.0-pro-exp": "Gemini 2.0 Pro",
+        "gemini-2.0-flash-exp": "Gemini 2.0 Flash",
     }
 }
 
