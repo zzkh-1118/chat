@@ -15,26 +15,355 @@ st.set_page_config(page_title="Gemini Intelligence", page_icon="🤖", layout="w
 
 # --- 2. 암호화 함수 (파일 저장용) ---
 def encrypt_data(data_str, key):
-    enc = [chr(ord(c) ^ ord(key[i % len(key)])) for i, c in enumerate(data_str)]
+    enc = []
+    for i, c in enumerate(data_str):
+        key_c = key[i % len(key)]
+        enc.append(chr(ord(c) ^ ord(key_c)))
     return base64.b64encode("".join(enc).encode()).decode()
 
 def decrypt_data(enc_str, key):
     try:
         dec_bytes = base64.b64decode(enc_str).decode()
-        dec = [chr(ord(c) ^ ord(key[i % len(key)])) for i, c in enumerate(dec_bytes)]
+        dec = []
+        for i, c in enumerate(dec_bytes):
+            key_c = key[i % len(key)]
+            dec.append(chr(ord(c) ^ ord(key_c)))
         return "".join(dec)
-    except:
+    except Exception:
         return ""
 
 # --- 3. 실시간 모델 목록 가져오기 ---
 @st.cache_data(ttl=600)
 def get_realtime_models(api_key: str):
+    # api_key 없으면 기본값만 노출
     if not api_key:
         return {"Default": {"gemini-1.5-flash": "Gemini 1.5 Flash"}}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         res = requests.get(url, timeout=15)
+        if res.status_code == 200:
+            models = res.json().get("models", [])
+            dynamic_options = {}
+
+            for m in models:
+                name = m.get("name", "")  # e.g. "models/gemini-1.5-flash"
+                methods = m.get("supportedGenerationMethods", [])
+                if not name or "generateContent" not in methods:
+                    continue
+
+                model_id = name.replace("models/", "")
+                label = model_id.replace("-", " ")
+                dynamic_options[model_id] = label
+
+            if not dynamic_options:
+                return {"Default": {"gemini-1.5-flash": "Gemini 1.5 Flash"}}
+
+            return {"Available Models": dynamic_options}
+
+        return {"Error": {"gemini-1.5-flash": f"API Error {res.status_code}"}}
+    except Exception:
+        return {"Error": {"gemini-1.5-flash": "Connection Error"}}
+
+# --- 4. 복사 스크립트 ---
+st.markdown(
+    """
+<script>
+    function copyText(base64Str, btnId, type) {
+        const text = decodeURIComponent(escape(atob(base64Str)));
+        const final = type === 'md' ? text : text.replace(/[#*`]/g, '');
+        navigator.clipboard.writeText(final).then(() => {
+            const btn = document.getElementById(btnId);
+            btn.innerText = "✅ Done";
+            setTimeout(() => { btn.innerText = (type === 'md' ? "📋 MD" : "📝 TXT"); }, 2000);
+        });
+    }
+</script>
+<style>
+    .custom-copy-btn { padding: 4px 8px; font-size: 11px; cursor: pointer; border-radius: 4px; border: 1px solid #444; background: #1e1e1e; color: #ccc; margin-right: 5px; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# --- 5. 히스토리 관리 (세션/파일) ---
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "auth" not in st.session_state:
+    st.session_state["auth"] = False
+if "search_support" not in st.session_state:
+    # {model_id: {"status": "OK/NO/MAYBE/ERROR/UNTESTED", "detail": "..."}}
+    st.session_state["search_support"] = {}
+
+def save_history():
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            f.write(encrypt_data(json.dumps(st.session_state["messages"]), ACCESS_PASSWORD))
+    except Exception:
+        # 파일 쓰기 권한/경로 문제 등은 조용히 무시(앱은 계속 동작)
+        pass
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                data = decrypt_data(f.read(), ACCESS_PASSWORD)
+                if data:
+                    st.session_state["messages"] = json.loads(data)
+        except Exception:
+            pass
+
+# --- 6. 응답/소스 안전 파서 ---
+def extract_text_from_candidate(candidate: dict) -> str:
+    content = candidate.get("content", {}) if isinstance(candidate, dict) else {}
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    texts = []
+    for p in parts:
+        if isinstance(p, dict):
+            t = p.get("text")
+            if isinstance(t, str):
+                texts.append(t)
+    return "".join(texts).strip()
+
+def extract_sources_from_candidate(candidate: dict):
+    sources = []
+    metadata = candidate.get("groundingMetadata", {}) if isinstance(candidate, dict) else {}
+    chunks = metadata.get("groundingChunks", []) if isinstance(metadata, dict) else []
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        web = ch.get("web")
+        if isinstance(web, dict):
+            title = web.get("title")
+            uri = web.get("uri")
+            if title and uri:
+                sources.append({"title": title, "uri": uri})
+    return sources
+
+# --- 7. 모델별 search tool 선택 ---
+def build_tools(selected_model: str, use_search: bool):
+    if not use_search:
+        return []
+    # Gemini 1.5 계열: legacy tool이 더 호환성이 좋음
+    if selected_model.startswith("gemini-1.5"):
+        return [{
+            "google_search_retrieval": {
+                "dynamic_retrieval_config": {
+                    "mode": "MODE_DYNAMIC",
+                    "dynamic_threshold": 0.7
+                }
+            }
+        }]
+    # 그 외: 최신 tool
+    return [{"google_search": {}}]
+
+# --- 8. Search 지원 테스트 ---
+def test_search_support(api_token: str, selected_model: str):
+    if not api_token:
+        return {"status": "NO_KEY", "detail": "API Key가 필요합니다."}
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_token}
+
+    tools = build_tools(selected_model, use_search=True)
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": "Find one recent fact about the Eiffel Tower and cite the source."}]
+        }],
+        "tools": tools,
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 256}
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=60)
+        if res.status_code == 200:
+            data = res.json()
+            cand0 = (data.get("candidates") or [{}])[0]
+            meta = cand0.get("groundingMetadata")
+            if meta and (meta.get("groundingChunks") or meta.get("webSearchQueries")):
+                return {"status": "OK", "detail": "Search/Grounding 응답 확인됨"}
+            return {"status": "MAYBE", "detail": "200 OK지만 groundingMetadata가 없을 수 있음(모델 판단에 따라)."}
+        else:
+            txt = res.text[:4000]
+            lowered = txt.lower()
+            if ("unknown field" in lowered) or ("not supported" in lowered) or ("invalid argument" in lowered):
+                return {"status": "NO", "detail": f"툴 미지원 가능성 높음: {res.status_code}: {txt}"}
+            return {"status": "ERROR", "detail": f"{res.status_code}: {txt}"}
+    except Exception as e:
+        return {"status": "ERROR", "detail": str(e)}
+
+# --- 9. 사이드바 (로그인/설정) ---
+with st.sidebar:
+    st.title("⚙️ Setup")
+
+    if not st.session_state["auth"]:
+        pwd = st.text_input("Access Code", type="password", key="login_pwd")
+        if st.button("Login", key="login_btn"):
+            if pwd == ACCESS_PASSWORD:
+                st.session_state["auth"] = True
+                load_history()
+                st.rerun()
+            else:
+                st.error("Wrong Code")
+        st.stop()
+
+    api_token = st.text_input("🔑 Gemini API Key", type="password", key="api_key_input")
+
+    if st.button("🔄 Refresh Models", key="refresh_models_btn"):
+        st.cache_data.clear()
+        st.success("Updated")
+
+    MODEL_DATA = get_realtime_models(api_token)
+    models_group = list(MODEL_DATA.keys())[0]
+    models_list = MODEL_DATA[models_group]
+
+    selected_model = st.selectbox(
+        "🤖 Model Engine",
+        list(models_list.keys()),
+        format_func=lambda x: models_list.get(x, x),
+        key="model_select",
+    )
+
+    use_search = st.toggle("🌐 Google Search (Grounding)", value=True, key="search_toggle")
+
+    # Search 지원 상태 배지
+    s = st.session_state["search_support"].get(selected_model, {"status": "UNTESTED", "detail": ""})
+    badge = {
+        "UNTESTED": "⚪ 미테스트",
+        "OK": "🟢 검색 가능",
+        "MAYBE": "🟡 애매(200 OK)",
+        "NO": "🔴 검색 불가(추정)",
+        "ERROR": "🟠 에러",
+        "NO_KEY": "⚫ 키 필요",
+    }.get(s["status"], "⚪ 미테스트")
+    st.caption(f"Search Support: **{badge}**")
+
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("🔎 Test Search Support", key="test_search_btn"):
+            with st.spinner("Testing..."):
+                result = test_search_support(api_token, selected_model)
+                st.session_state["search_support"][selected_model] = result
+                st.rerun()
+    with colB:
+        if st.button("🧹 Clear Test", key="clear_test_btn"):
+            st.session_state["search_support"].pop(selected_model, None)
+            st.rerun()
+
+    if s.get("detail"):
+        with st.expander("Test detail"):
+            st.write(s["detail"])
+
+    if st.button("🗑️ Clear History", key="clear_history_btn"):
+        st.session_state["messages"] = []
+        try:
+            if os.path.exists(HISTORY_FILE):
+                os.remove(HISTORY_FILE)
+        except Exception:
+            pass
+        st.rerun()
+
+# --- 10. 메인 채팅 UI ---
+st.title("📊 AI Intelligence Center")
+st.caption("아래는 채팅 영역입니다. (API Key가 있으면 하단에 입력창이 나타납니다.)")
+
+# 메시지 표시
+for i, m in enumerate(st.session_state["messages"]):
+    with st.chat_message(m["role"]):
+        if m["role"] == "assistant":
+            content_encoded = base64.b64encode(m["content"].encode("utf-8")).decode("utf-8")
+            st.markdown(
+                f'<button id="md_{i}" class="custom-copy-btn" onclick="copyText(\'{content_encoded}\', \'md_{i}\', \'md\')">📋 MD</button>'
+                f'<button id="txt_{i}" class="custom-copy-btn" onclick="copyText(\'{content_encoded}\', \'txt_{i}\', \'txt\')">📝 TXT</button>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(m["content"])
+            if m.get("sources"):
+                with st.expander("📚 Sources"):
+                    for s in m["sources"]:
+                        st.write(f"- [{s['title']}]({s['uri']})")
+        else:
+            st.markdown(m["content"])
+
+# API Key 없으면 채팅 입력 막고 안내
+if not api_token:
+    st.info("왼쪽 사이드바에 Gemini API Key를 입력하면 하단에 채팅 입력창이 활성화돼요.")
+    st.stop()
+
+# 채팅 입력 (이게 'Chat 할 수 있는 공간')
+prompt = st.chat_input("Ask anything...")
+if prompt:
+    st.session_state["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        ph = st.empty()
+        ph.markdown("📡 Processing...")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent"
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_token}
+
+        # 최근 10개 메시지만 컨텍스트로 사용
+        contents = []
+        for msg in st.session_state["messages"][-10:]:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+        tools = build_tools(selected_model, use_search)
+
+        payload = {
+            "contents": contents,
+            "tools": tools,
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096},
+        }
+
+        def call_gemini(p):
+            return requests.post(url, headers=headers, json=p, timeout=60)
+
+        try:
+            res = call_gemini(payload)
+
+            # Search tool이 원인일 때 tools 없이 자동 재시도
+            if res.status_code != 200 and use_search and tools:
+                payload_no_tools = dict(payload)
+                payload_no_tools["tools"] = []
+                res2 = call_gemini(payload_no_tools)
+
+                if res2.status_code == 200:
+                    data = res2.json()
+                    cand0 = (data.get("candidates") or [{}])[0]
+                    bot_text = extract_text_from_candidate(cand0) or "(응답 텍스트를 추출하지 못했어요.)"
+
+                    ph.markdown(
+                        bot_text
+                        + "\n\n⚠️ 참고: 선택한 모델/설정에서 Web Search(Grounding)가 지원되지 않아, 검색 없이 답변했어요."
+                    )
+                    st.session_state["messages"].append({"role": "assistant", "content": bot_text, "sources": []})
+                    save_history()
+                    st.stop()
+
+            if res.status_code == 200:
+                data = res.json()
+                cand0 = (data.get("candidates") or [{}])[0]
+
+                bot_text = extract_text_from_candidate(cand0) or "(응답 텍스트를 추출하지 못했어요.)"
+                sources = extract_sources_from_candidate(cand0)
+
+                ph.markdown(bot_text)
+                st.session_state["messages"].append({"role": "assistant", "content": bot_text, "sources": sources})
+                save_history()
+
+                # sources expander 갱신
+                if sources:
+                    st.rerun()
+            else:
+                ph.error(f"Error {res.status_code}: {res.text}")
+
+        except Exception as e:
+            ph.error(str(e))
+```0        res = requests.get(url, timeout=15)
         if res.status_code == 200:
             models = res.json().get("models", [])
             dynamic_options = {}
