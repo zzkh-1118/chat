@@ -11,7 +11,7 @@ ACCESS_PASSWORD = "1111"
 HISTORY_FILE = "system_log.dat"
 
 # --- 1. 페이지 설정 ---
-st.set_page_config(page_title="Gemini Intelligence", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Gemini Intelligence Center", page_icon="🤖", layout="wide")
 
 # --- 2. 암호화 함수 ---
 def encrypt_data(data_str, key):
@@ -74,9 +74,9 @@ def load_history():
                 if data: st.session_state["messages"] = json.loads(data)
         except: pass
 
-# --- 6. 사이드바 ---
+# --- 6. 사이드바 (모든 세부 기능 복원) ---
 with st.sidebar:
-    st.title("⚙️ Setup")
+    st.title("⚙️ System Control")
     if not st.session_state["auth"]:
         pwd = st.text_input("Access Code", type="password", key="login_pwd")
         if st.button("Login", key="login_btn"):
@@ -87,6 +87,35 @@ with st.sidebar:
         st.stop()
 
     api_token = st.text_input("🔑 Gemini API Key", type="password", key="api_key_input")
+    
+    # [복원 1] 기본 파라미터 설정
+    st.divider()
+    sys_prompt = st.text_area("📜 System Instruction", value="You are a helpful AI assistant.", height=80)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        entropy = st.slider("✨ Entropy (Temp)", 0.0, 2.0, 0.7, 0.1)
+        top_p = st.slider("🎯 Top-P", 0.0, 1.0, 0.95, 0.05)
+    with col2:
+        max_tokens = st.number_input("📏 Max Tokens", 100, 8192, 4096)
+        top_k = st.number_input("🎲 Top-K", 1, 100, 40)
+
+    # [복원 2] 안전 설정 (Safety Settings)
+    with st.expander("🛡️ Safety Settings"):
+        safety_level = st.select_slider(
+            "Filter Level",
+            options=["BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"],
+            value="BLOCK_ONLY_HIGH"
+        )
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": safety_level},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": safety_level},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": safety_level},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": safety_level},
+        ]
+
+    # 모델 설정
+    st.divider()
     if st.button("🔄 Refresh Models", key="refresh_models_btn"): st.cache_data.clear(); st.success("Updated")
     
     MODEL_DATA = get_realtime_models(api_token)
@@ -100,7 +129,7 @@ with st.sidebar:
         if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE)
         st.rerun()
 
-# --- 7. 메인 채팅 ---
+# --- 7. 메인 채팅 UI ---
 st.title("📊 AI Intelligence Center")
 
 for i, m in enumerate(st.session_state["messages"]):
@@ -123,10 +152,23 @@ if prompt := st.chat_input("Ask anything..."):
         ph = st.empty(); ph.markdown("📡 Processing...")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_token}"
         
+        # 시스템 프롬프트 구성
+        history_payload = [{"role": "user", "parts": [{"text": f"System Instruction: {sys_prompt}"}]},
+                           {"role": "model", "parts": [{"text": "Understood. I will act according to these instructions."}]}]
+        
+        for msg in st.session_state["messages"][-10:]:
+            history_payload.append({"role": "user" if msg["role"]=="user" else "model", "parts": [{"text": msg["content"]}]})
+
         payload = {
-            "contents": [{"role": "user" if msg["role"]=="user" else "model", "parts": [{"text": msg["content"]}]} for msg in st.session_state["messages"][-10:]],
+            "contents": history_payload,
             "tools": [{"google_search": {}}] if use_search else [],
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096}
+            "safetySettings": safety_settings,
+            "generationConfig": {
+                "temperature": entropy, 
+                "topP": top_p,
+                "topK": top_k,
+                "maxOutputTokens": max_tokens
+            }
         }
 
         try:
