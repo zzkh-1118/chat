@@ -167,7 +167,6 @@ if "sessions" not in st.session_state: st.session_state.sessions = load_history(
 if "api_key" not in st.session_state: st.session_state.api_key = ""
 
 # --- 5. 모델 리스트 ---
-# --- 5. 모델 설정 (2026년 최신 공식 ID 반영) ---
 MODEL_OPTIONS = {
     "Gemini 3 Series (Latest)": {
         "gemini-3-pro-preview": "Gemini 3 Pro (New)",
@@ -184,7 +183,6 @@ MODEL_OPTIONS = {
         "gemini-2.0-flash-lite": "Gemini 2.0 Flash-Lite",
     }
 }
-
 
 # --- 6. UI ---
 with st.sidebar:
