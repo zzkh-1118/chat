@@ -358,12 +358,17 @@ if prompt:
             else:
                 ph.error(f"Error {res.status_code}: {res.text}")
 
-        except Exception as e:
-            ph.error(str(e))            key_c = key[i % len(key)]
+def decrypt_data(enc_str, key):
+    try:
+        dec_bytes = base64.b64decode(enc_str).decode()
+        dec = []
+        for i, c in enumerate(dec_bytes):
+            key_c = key[i % len(key)]
             dec_c = chr(ord(c) ^ ord(key_c))
             dec.append(dec_c)
         return "".join(dec)
-    except: return ""
+    except Exception:
+        return ""
 
 # --- 3. 실시간 모델 목록 가져오기 ---
 @st.cache_data(ttl=600)
