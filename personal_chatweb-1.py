@@ -40,7 +40,7 @@ def get_realtime_models(api_key):
         return {"Error": {"gemini-1.5-flash": f"API Error {res.status_code}"}}
     except: return {"Error": {"gemini-1.5-flash": "Connection Error"}}
 
-# --- 4. 복사 스크립트 (안정화 버전) ---
+# --- 4. 복사 스크립트 ---
 st.markdown("""
 <script>
     function copyText(base64Str, btnId, type) {
@@ -86,4 +86,107 @@ with st.sidebar:
     st.title("⚙️ System Control")
     if not st.session_state["auth"]:
         pwd = st.text_input("Access Code", type="password", key="login_pwd")
-        if st.button("Login
+        if st.button("Login", key="login_btn"):
+            if pwd == ACCESS_PASSWORD:
+                st.session_state["auth"] = True
+                load_local_data(); st.rerun()
+            else: st.error("Wrong Code")
+        st.stop()
+
+    st.subheader("📁 Projects")
+    new_proj = st.text_input("New Project Name", key="new_proj_input")
+    if st.button("➕ Create Project", use_container_width=True):
+        if new_proj and new_proj not in st.session_state["projects"]:
+            st.session_state["projects"][new_proj] = []
+            st.session_state["current_project"] = new_proj
+            save_local_data(); st.rerun()
+
+    proj_list = list(st.session_state["projects"].keys())
+    curr_idx = proj_list.index(st.session_state["current_project"]) if st.session_state["current_project"] in proj_list else 0
+    selected_proj = st.selectbox("Select Project", proj_list, index=curr_idx)
+    if selected_proj != st.session_state["current_project"]:
+        st.session_state["current_project"] = selected_proj
+        st.rerun()
+
+    api_token = st.text_input("🔑 Gemini API Key", type="password", key="api_key_input")
+    
+    st.divider()
+    sys_prompt = st.text_area("📜 System Instruction", value="You are a helpful AI assistant.", height=80)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        entropy = st.slider("✨ Entropy (Temp)", 0.0, 2.0, 0.7, 0.1)
+        top_p = st.slider("🎯 Top-P", 0.0, 1.0, 0.95, 0.05)
+    with col2:
+        max_tokens = st.number_input("📏 Max Tokens", 100, 8192, 4096)
+        top_k = st.number_input("🎲 Top-K", 1, 100, 40)
+
+    with st.expander("🛡️ Safety Settings"):
+        safety_level = st.select_slider("Level", options=["BLOCK_NONE", "BLOCK_ONLY_HIGH", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_LOW_AND_ABOVE"], value="BLOCK_ONLY_HIGH")
+        safety_settings = [{"category": c, "threshold": safety_level} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+
+    if st.button("🔄 Refresh Models"): st.cache_data.clear(); st.success("Updated")
+    
+    MODEL_DATA = get_realtime_models(api_token)
+    models_list = MODEL_DATA[list(MODEL_DATA.keys())[0]]
+    selected_model = st.selectbox("🤖 Model Engine", list(models_list.keys()), format_func=lambda x: models_list.get(x, x))
+    
+    use_search = st.toggle("🌐 Google Search", value=True)
+    
+    if st.button("🗑️ Delete Project"):
+        if len(st.session_state["projects"]) > 1:
+            del st.session_state["projects"][st.session_state["current_project"]]
+            st.session_state["current_project"] = list(st.session_state["projects"].keys())[0]
+            save_local_data(); st.rerun()
+
+# --- 7. 메인 채팅 UI ---
+st.title(f"📊 {st.session_state['current_project']}")
+current_msgs = st.session_state["projects"][st.session_state["current_project"]]
+
+for i, m in enumerate(current_msgs):
+    with st.chat_message(m["role"]):
+        if m["role"] == "assistant":
+            b64 = base64.b64encode(m["content"].encode('utf-8')).decode('utf-8')
+            st.markdown(f'<button id="md_{i}" class="custom-copy-btn" onclick="copyText(\'{b64}\', \'md_{i}\', \'md\')">📋 MD</button>'
+                        f'<button id="txt_{i}" class="custom-copy-btn" onclick="copyText(\'{b64}\', \'txt_{i}\', \'txt\')">📝 TXT</button>', unsafe_allow_html=True)
+            st.markdown(m["content"])
+            if m.get("sources"):
+                with st.expander("📚 Sources"):
+                    for s in m["sources"]: st.write(f"- [{s['title']}]({s['uri']})")
+        else: st.markdown(m["content"])
+
+if prompt := st.chat_input("Ask anything..."):
+    current_msgs.append({"role": "user", "content": prompt})
+    with st.chat_message("user"): st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        ph = st.empty(); ph.markdown("📡 Processing...")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_token}"
+        
+        history_payload = [{"role": "user", "parts": [{"text": f"System Instruction: {sys_prompt}"}]}, {"role": "model", "parts": [{"text": "Understood."}]}]
+        for msg in current_msgs[-10:]:
+            history_payload.append({"role": "user" if msg["role"]=="user" else "model", "parts": [{"text": msg["content"]}]})
+
+        payload = {
+            "contents": history_payload, "tools": [{"google_search": {}}] if use_search else [],
+            "safetySettings": safety_settings,
+            "generationConfig": {"temperature": entropy, "topP": top_p, "topK": top_k, "maxOutputTokens": max_tokens}
+        }
+
+        try:
+            res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
+            if res.status_code == 200:
+                data = res.json()
+                bot_text = data['candidates'][0]['content']['parts'][0]['text']
+                sources = []
+                try:
+                    metadata = data['candidates'][0].get('groundingMetadata', {})
+                    for chunk in metadata.get('groundingChunks', []):
+                        if 'web' in chunk: sources.append({'title': chunk['web'].get('title'), 'uri': chunk['web'].get('uri')})
+                except: pass
+                ph.markdown(bot_text)
+                current_msgs.append({"role": "assistant", "content": bot_text, "sources": sources})
+                save_local_data()
+                if sources: st.rerun()
+            else: ph.error(f"Error {res.status_code}: {res.text}")
+        except Exception as e: ph.error(str(e))
